@@ -107,6 +107,7 @@ class WindowManager {
   private blurHideTimer: ReturnType<typeof setTimeout> | null = null // Linux blur 延迟隐藏定时器
   // macOS 全屏场景的 1x1 隐形“空间锚点”窗口（子窗口跟随父窗口进入全屏 Space）
   private macSpaceAnchor: BrowserWindow | null = null
+  private isPreparingMacSpace = false // 透明迁移阶段不恢复输入焦点，正式显示时再恢复
   // Double-tap 唤醒窗口时，Windows 可能紧跟一个短暂 blur；这两个 timer 用于跳过误关闭并补一次焦点。
   private doubleTapFocusTimer: ReturnType<typeof setTimeout> | null = null
   private windowsHotkeyFocusTimer: ReturnType<typeof setTimeout> | null = null
@@ -518,14 +519,6 @@ class WindowManager {
       }
     })
 
-    // macOS：主窗口被拖到其它显示器时同步“空间锚点”，避免锚点把子窗口限制在旧显示器
-    this.mainWindow.on('move', () => {
-      if (!platform.isMacOS || !this.mainWindow) return
-      if (!this.macSpaceAnchor || this.macSpaceAnchor.isDestroyed()) return
-      const [x, y] = this.mainWindow.getPosition()
-      this.syncAnchorToDisplayOf(x, y)
-    })
-
     this.mainWindow.on('blur', () => {
       if (this.isBlurHideSuppressed()) return
 
@@ -566,6 +559,9 @@ class WindowManager {
     }
 
     this.mainWindow.on('show', () => {
+      // Space 迁移中的透明显示只用于登记窗口归属，避免提前聚焦搜索框或插件。
+      if (this.isPreparingMacSpace) return
+
       // 开始恢复焦点流程，防止 focus 事件监听器修改 lastFocusTarget
       this.isRestoringFocus = true
       const savedFocusTarget = this.lastFocusTarget
@@ -916,7 +912,7 @@ class WindowManager {
           visibleOnFullScreen: true,
           skipTransformProcessType: true
         })
-        this.ensureMacOSSpaceAnchor()
+        this.prepareMacOSFullscreenSpace()
         this.mainWindow.show()
         this.mainWindow.focus()
         return
@@ -934,7 +930,7 @@ class WindowManager {
   }
 
   /**
-   * 确保 macOS 全屏场景使用的“空间锚点”窗口存在，并把主窗口挂为它的子窗口。
+   * 确保 macOS 全屏场景使用的“空间锚点”窗口存在。
    *
    * 背景：panel 窗口自带 canJoinAllSpaces + fullScreenAuxiliary 集合行为，但当窗口在某个
    * 全屏 Space 中被隐藏（orderOut）后，WindowServer 会把它的 Space 归属收敛到当时所在的
@@ -943,13 +939,13 @@ class WindowManager {
    * 对集合行为只增不减，重复调用 setVisibleOnAllWorkspaces 也无法恢复归属。
    *
    * 方案：创建一个 1x1 不可见 panel 窗口作为锚点。macOS 上子窗口跟随父窗口所在的 Space，
-   * 且 Electron 在每次 show() 时重新挂接父窗口（hide() 时脱开），因此主窗口挂上锚点后，
-   * 无论当前处于哪个全屏 Space 都能可靠显示。锚点只在首次全屏呼出时创建，之后复用。
+   * 临时把主窗口挂上锚点即可登记到当前 Space。正式显示前必须解除父子关系，否则挂接子窗口
+   * 时会直接显示主窗口，跳过原本的系统唤出动画。锚点只在首次全屏呼出时创建，之后复用。
    *
-   * @returns 无返回值
+   * @returns 空间锚点窗口；主窗口不存在时返回 null。
    */
-  private ensureMacOSSpaceAnchor(): void {
-    if (!this.mainWindow) return
+  private ensureMacOSSpaceAnchor(): BrowserWindow | null {
+    if (!this.mainWindow) return null
 
     const anchorAlive = !!this.macSpaceAnchor && !this.macSpaceAnchor.isDestroyed()
     if (!anchorAlive) {
@@ -985,10 +981,34 @@ class WindowManager {
       this.macSpaceAnchor.showInactive()
     }
 
-    const anchor = this.macSpaceAnchor
+    return this.macSpaceAnchor
+  }
+
+  /**
+   * 透明地把隐藏的主窗口迁移到当前全屏 Space，再恢复为独立窗口以保留系统唤出动画。
+   * @returns 无返回值。
+   */
+  private prepareMacOSFullscreenSpace(): void {
+    const mainWindow = this.mainWindow
+    if (!mainWindow || mainWindow.isVisible()) return
+
+    const anchor = this.ensureMacOSSpaceAnchor()
     if (!anchor) return
-    // 把主窗口挂为锚点子窗口（Electron 在每次 show() 时自动重新挂接）
-    this.mainWindow.setParentWindow(anchor)
+
+    // 挂接子窗口会直接将其显示，因此先透明迁移并跳过这一阶段的焦点恢复。
+    const opacity = mainWindow.getOpacity()
+    this.isPreparingMacSpace = true
+    try {
+      mainWindow.setOpacity(0)
+      mainWindow.setParentWindow(anchor)
+      mainWindow.showInactive()
+    } finally {
+      // Space 归属登记后移除父窗口；恢复隐藏和透明度，让随后 show() 执行系统动画。
+      mainWindow.hide()
+      mainWindow.setParentWindow(null)
+      mainWindow.setOpacity(opacity)
+      this.isPreparingMacSpace = false
+    }
   }
 
   /**

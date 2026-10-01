@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => {
       },
       setVisibleOnAllWorkspaces: vi.fn(),
       setParentWindow: vi.fn(),
+      getOpacity: vi.fn(() => 1),
+      setOpacity: vi.fn(),
       setAlwaysOnTop: vi.fn(),
       setPosition: vi.fn(),
       getPosition: vi.fn(() => [100, 100]),
@@ -212,6 +214,7 @@ vi.mock('../../src/main/managers/pluginManager', () => ({
 
 describe('windowManager macOS activation', () => {
   beforeEach(() => {
+    vi.resetModules()
     vi.useFakeTimers()
     vi.clearAllMocks()
     mocks.dbGet.mockReturnValue(null)
@@ -278,9 +281,21 @@ describe('windowManager macOS activation', () => {
     expect(mainWindow.setVisibleOnAllWorkspaces).toHaveBeenCalledTimes(2)
     expect(mainWindow.show).toHaveBeenCalled()
     expect(mainWindow.focus).toHaveBeenCalled()
-    // 全屏呼出时主窗口应挂到 1x1 空间锚点上（子窗口跟随父窗口进入全屏 Space）
-    expect(mainWindow.setParentWindow).toHaveBeenCalledTimes(1)
+    // 只在透明迁移期间挂到锚点，正式显示前恢复为独立窗口。
+    expect(mainWindow.setParentWindow).toHaveBeenCalledTimes(2)
     expect(mainWindow.setParentWindow.mock.calls[0][0]).not.toBe(mainWindow)
+    expect(mainWindow.setParentWindow).toHaveBeenLastCalledWith(null)
+    expect(mainWindow.setOpacity.mock.calls).toEqual([[0], [1]])
+    expect(mainWindow.showInactive).toHaveBeenCalledTimes(1)
+    expect(mainWindow.hide).toHaveBeenCalledTimes(1)
+    expect(
+      mainWindow.webContents.send.mock.calls.filter(
+        ([channel]: [string]) => channel === 'focus-search'
+      )
+    ).toHaveLength(1)
+    expect(mainWindow.setParentWindow.mock.invocationCallOrder[1]).toBeLessThan(
+      mainWindow.show.mock.invocationCallOrder[0]
+    )
 
     // 再次呼出：锚点已存在，应跟随主窗口同步到目标显示器（否则子窗口会被限制在旧显示器）
     const anchor = mainWindow.setParentWindow.mock.calls[0][0]
@@ -289,6 +304,48 @@ describe('windowManager macOS activation', () => {
     windowManager.showWindow()
     expect(anchor.setPosition).toHaveBeenCalledWith(-1728, 254, false)
     expect(mainWindow.setPosition).toHaveBeenCalled()
+  })
+
+  it('keeps desktop summons independent after a fullscreen summon', async () => {
+    const { default: windowManager } = await import('../../src/main/managers/windowManager')
+    windowManager.createWindow()
+    const mainWindow = mocks.latestWindow.current
+    windowManager.showWindow()
+    expect(mainWindow.setParentWindow).not.toHaveBeenCalled()
+
+    mocks.nativeGetActiveWindow.mockReturnValue({ pid: 4242, isFullscreen: true })
+    windowManager.showWindow()
+    expect(mainWindow.setParentWindow).toHaveBeenLastCalledWith(null)
+
+    // 退出全屏后不再挂接锚点，普通桌面呼出继续通过独立窗口的 show()。
+    mocks.nativeGetActiveWindow.mockReturnValue({ pid: 4242, isFullscreen: false })
+    mainWindow.setParentWindow.mockClear()
+    mainWindow.showInactive.mockClear()
+    mainWindow.show.mockClear()
+    windowManager.showWindow()
+    expect(mainWindow.setParentWindow).not.toHaveBeenCalled()
+    expect(mainWindow.showInactive).not.toHaveBeenCalled()
+    expect(mainWindow.show).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores opacity and parenting if fullscreen migration fails', async () => {
+    const { default: windowManager } = await import('../../src/main/managers/windowManager')
+    windowManager.createWindow()
+    const mainWindow = mocks.latestWindow.current
+    mainWindow.getOpacity.mockReturnValue(0.8)
+    mainWindow.showInactive.mockImplementationOnce(() => {
+      throw new Error('Space migration failed')
+    })
+    mocks.nativeGetActiveWindow.mockReturnValue({ pid: 4242, isFullscreen: true })
+
+    expect(() => windowManager.showWindow()).toThrow('Space migration failed')
+    expect(mainWindow.setParentWindow).toHaveBeenLastCalledWith(null)
+    expect(mainWindow.setOpacity).toHaveBeenLastCalledWith(0.8)
+
+    // 失败清理后再次呼出仍然恢复输入焦点，不残留透明迁移标志。
+    mocks.nativeGetActiveWindow.mockReturnValue(null)
+    windowManager.showWindow()
+    expect(mainWindow.webContents.send).toHaveBeenCalledWith('focus-search', null)
   })
 
   it('keeps the non-activating panel when the foreground app is not fullscreen', async () => {
