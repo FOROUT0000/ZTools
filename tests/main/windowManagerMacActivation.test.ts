@@ -52,6 +52,7 @@ const mocks = vi.hoisted(() => {
       showInactive: vi.fn(() => emit('show')),
       emit,
       hide: vi.fn(),
+      destroy: vi.fn(),
       minimize: vi.fn(),
       blur: vi.fn(),
       focus: vi.fn(),
@@ -316,6 +317,7 @@ describe('windowManager macOS activation', () => {
     mocks.nativeGetActiveWindow.mockReturnValue({ pid: 4242, isFullscreen: true })
     windowManager.showWindow()
     expect(mainWindow.setParentWindow).toHaveBeenLastCalledWith(null)
+    const firstAnchor = mainWindow.setParentWindow.mock.calls[0][0]
 
     // 退出全屏后不再挂接锚点，普通桌面呼出继续通过独立窗口的 show()。
     mocks.nativeGetActiveWindow.mockReturnValue({ pid: 4242, isFullscreen: false })
@@ -326,6 +328,17 @@ describe('windowManager macOS activation', () => {
     expect(mainWindow.setParentWindow).not.toHaveBeenCalled()
     expect(mainWindow.showInactive).not.toHaveBeenCalled()
     expect(mainWindow.show).toHaveBeenCalledTimes(1)
+    expect(firstAnchor.destroy).toHaveBeenCalledTimes(1)
+
+    // 普通桌面重复呼出不重复销毁；返回全屏时新建锚点并继续保持主窗口独立。
+    windowManager.showWindow()
+    expect(firstAnchor.destroy).toHaveBeenCalledTimes(1)
+    mocks.nativeGetActiveWindow.mockReturnValue({ pid: 4242, isFullscreen: true })
+    windowManager.showWindow()
+    const nextAnchor = mainWindow.setParentWindow.mock.calls[0][0]
+    expect(nextAnchor).not.toBe(firstAnchor)
+    expect(mainWindow.setParentWindow).toHaveBeenLastCalledWith(null)
+    expect(nextAnchor.destroy).not.toHaveBeenCalled()
   })
 
   it('restores opacity and parenting if fullscreen migration fails', async () => {

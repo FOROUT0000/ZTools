@@ -64,7 +64,10 @@ jobs:
             prerelease="${INPUT_PRERELEASE:-true}"
           else
             version="${GITHUB_REF_NAME#v}"
-            prerelease="false"
+            case "$version" in
+              *-*) prerelease="true" ;;
+              *) prerelease="false" ;;
+            esac
           fi
 
           if [ -z "$version" ]; then
@@ -188,7 +191,10 @@ jobs:
             prerelease="${INPUT_PRERELEASE:-true}"
           else
             version="${GITHUB_REF_NAME#v}"
-            prerelease="false"
+            case "$version" in
+              *-*) prerelease="true" ;;
+              *) prerelease="false" ;;
+            esac
           fi
 
           if [ -z "$version" ]; then

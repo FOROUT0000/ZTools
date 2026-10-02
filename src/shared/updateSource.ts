@@ -19,15 +19,18 @@ export function isInAppUpdateSource(source: SelectableUpdateSource): boolean {
 }
 
 /**
- * 从服务端返回的下载源中选择默认渠道，优先使用 GitHub。
+ * 从服务端返回的下载源中选择默认渠道，优先使用官方源。
  * @param sources 当前版本可用的下载源列表。
  * @returns 默认下载源标识；没有可用来源时返回 null。
  */
 export function getDefaultUpdateSourceID(sources: SelectableUpdateSource[]): number | null {
+  const officialSource = sources.find(
+    (source) => source.platformName.trim() === '官方源'
+  )
   const githubSource = sources.find(
     (source) => source.platformName.trim().toLowerCase() === 'github'
   )
-  return githubSource?.id ?? sources[0]?.id ?? null
+  return officialSource?.id ?? githubSource?.id ?? sources[0]?.id ?? null
 }
 
 /**

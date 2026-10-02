@@ -105,7 +105,7 @@ class WindowManager {
   private modalDialogBlurHideSuppressionDepth: number = 0
   private lastBlurHideTime: number = 0 // blur 导致隐藏窗口的时间戳（用于解决托盘点击竞态）
   private blurHideTimer: ReturnType<typeof setTimeout> | null = null // Linux blur 延迟隐藏定时器
-  // macOS 全屏场景的 1x1 隐形“空间锚点”窗口（子窗口跟随父窗口进入全屏 Space）
+  // macOS 全屏场景的空间锚点；全屏呼出期间复用，普通桌面呼出时释放。
   private macSpaceAnchor: BrowserWindow | null = null
   private isPreparingMacSpace = false // 透明迁移阶段不恢复输入焦点，正式显示时再恢复
   // Double-tap 唤醒窗口时，Windows 可能紧跟一个短暂 blur；这两个 timer 用于跳过误关闭并补一次焦点。
@@ -918,7 +918,10 @@ class WindowManager {
         return
       }
 
-      // 非全屏场景保持非激活 panel，保留原应用的前台状态
+      // 普通桌面不再需要锚点，释放窗口资源；下一次全屏呼出时按需重建。
+      this.releaseMacOSSpaceAnchor()
+
+      // 非全屏场景保持非激活 panel，保留原应用的前台状态。
       this.mainWindow.show()
       return
     }
@@ -940,7 +943,8 @@ class WindowManager {
    *
    * 方案：创建一个 1x1 不可见 panel 窗口作为锚点。macOS 上子窗口跟随父窗口所在的 Space，
    * 临时把主窗口挂上锚点即可登记到当前 Space。正式显示前必须解除父子关系，否则挂接子窗口
-   * 时会直接显示主窗口，跳过原本的系统唤出动画。锚点只在首次全屏呼出时创建，之后复用。
+   * 时会直接显示主窗口，跳过原本的系统唤出动画。锚点在全屏呼出时按需创建并复用，普通桌面
+   * 呼出时释放，避免离开全屏场景后持续保留窗口资源。
    *
    * @returns 空间锚点窗口；主窗口不存在时返回 null。
    */
@@ -982,6 +986,17 @@ class WindowManager {
     }
 
     return this.macSpaceAnchor
+  }
+
+  /**
+   * 释放普通桌面呼出时已不需要的空间锚点，下次全屏呼出可重新创建。
+   * @returns 无返回值。
+   */
+  private releaseMacOSSpaceAnchor(): void {
+    const anchor = this.macSpaceAnchor
+    // 主窗口已在迁移结束时解除父子关系，销毁锚点不会连带关闭主窗口。
+    this.macSpaceAnchor = null
+    if (anchor && !anchor.isDestroyed()) anchor.destroy()
   }
 
   /**

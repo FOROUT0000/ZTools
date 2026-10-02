@@ -153,7 +153,6 @@ app.whenReady().then(async () => {
   // 初始化 API 和插件管理器
   if (mainWindow) {
     api.init(mainWindow, pluginManager)
-    activityHeartbeatService.setUpdateHandler((update) => updaterAPI.handleHeartbeatUpdate(update))
     pluginManager.init(mainWindow)
     if (!isE2ETest) {
       // 首次应用列表准备完成后再初始化应用目录监听器，避免启动时与应用扫描抢占磁盘 I/O。
@@ -224,6 +223,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   windowManager.unregisterAllShortcuts()
   api.cleanup()
+  updaterAPI.cleanup()
   // 停止应用目录监听
   appWatcher.stop()
   // 清理悬浮球

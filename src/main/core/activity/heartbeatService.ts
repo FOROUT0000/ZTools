@@ -7,27 +7,12 @@ import {
   refreshOfficialAccountTokens
 } from '../account/officialAccountService'
 import type { CredentialSession } from '../auth/credentialSessionService'
-import {
-  getUpdateChannel,
-  getUpdateSystemType,
-  type ServerUpdateInfo
-} from '../../api/serverUpdateCatalog'
 
 const HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000
 
 class ActivityHeartbeatService {
   private timer: NodeJS.Timeout | null = null
   private inFlight = false
-  private updateHandler: ((update: ServerUpdateInfo | null) => void | Promise<void>) | null = null
-
-  /**
-   * 注册心跳更新信息的消费回调。
-   * @param handler 接收服务端更新信息的回调函数。
-   * @returns 无返回值。
-   */
-  setUpdateHandler(handler: (update: ServerUpdateInfo | null) => void | Promise<void>): void {
-    this.updateHandler = handler
-  }
 
   start(): void {
     if (this.timer) return
@@ -62,21 +47,16 @@ class ActivityHeartbeatService {
     try {
       const config = await this.loadConfig()
       const response = await this.postHeartbeat(config)
-      if (response.status !== 401) {
-        await this.updateHandler?.(response.update)
-        return
-      }
+      if (response !== 401) return
       const refreshed = await refreshOfficialAccountTokens(config?.refreshToken)
       if (
         (refreshed.status === 'refreshed' || refreshed.status === 'reused') &&
         refreshed.session.token
       ) {
-        const retry = await this.postHeartbeat(refreshed.session)
-        await this.updateHandler?.(retry.update)
+        await this.postHeartbeat(refreshed.session)
       } else if (refreshed.status === 'invalid') {
-        // 登录凭据确认失效后仍以匿名心跳获取版本更新信息。
-        const retry = await this.postHeartbeat(null)
-        await this.updateHandler?.(retry.update)
+        // 登录凭据确认失效后仍以匿名心跳记录设备活跃。
+        await this.postHeartbeat(null)
       }
     } catch (error) {
       console.warn('[ActivityHeartbeat] 上报失败:', error)
@@ -88,11 +68,9 @@ class ActivityHeartbeatService {
   /**
    * 向官方服务端提交当前设备的活跃心跳和 ZTools 版本。
    * @param config 当前同步账号配置；未登录时为 null
-   * @returns 服务端返回的 HTTP 状态码和更新信息
+   * @returns 服务端返回的 HTTP 状态码。
    */
-  private async postHeartbeat(
-    config: CredentialSession | null
-  ): Promise<{ status: number; update: ServerUpdateInfo | null }> {
+  private async postHeartbeat(config: CredentialSession | null): Promise<number> {
     const deviceId = pluginDeviceAPI.getDeviceIdPublic()
     const token = config?.serverUrl === OFFICIAL_SYNC_SERVER_URL ? config.token : ''
 
@@ -107,16 +85,11 @@ class ActivityHeartbeatService {
       body: JSON.stringify({
         deviceId,
         uid: token ? config?.username || '' : '',
-        ztoolsVersion,
-        systemType: getUpdateSystemType(),
-        updateChannel: getUpdateChannel()
+        ztoolsVersion
       }),
       validateStatus: (status) => (status >= 200 && status < 300) || status === 401
     })
-    return {
-      status: response.status,
-      update: response.status === 200 ? (response.data?.update ?? null) : null
-    }
+    return response.status
   }
 
   /**

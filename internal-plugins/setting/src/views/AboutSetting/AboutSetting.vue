@@ -143,12 +143,12 @@ function handleUpdateOptionsKeydown(event: KeyboardEvent): void {
  */
 async function handleReceiveBetaUpdatesChange(): Promise<void> {
   try {
-    // 与自动检查更新共用设备级设置，确保主进程心跳和手动检查读取同一状态。
+    // 与自动检查更新共用设备级设置，确保自动和手动检查读取同一状态。
     const data = (await window.ztools.internal.dbGet('settings-general')) || {}
     data.receiveBetaUpdates = receiveBetaUpdates.value
     await window.ztools.internal.dbPut('settings-general', data)
 
-    // 开启订阅后立即检查，避免用户等待下一次半小时心跳。
+    // 开启订阅后立即检查，避免用户等待下一次定时检查。
     if (receiveBetaUpdates.value && autoCheckUpdate.value) {
       await window.ztools.internal.updaterCheckUpdate()
     }

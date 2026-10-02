@@ -5,6 +5,7 @@ import type { PlatformUpdateInfo, UpdateDownloadSource } from './platformUpdater
 import databaseAPI from './shared/database'
 import { HOST_STORAGE_KEYS } from '../../shared/storageKeys'
 import { resolveUpdateChannel, type UpdateChannel } from '../../shared/updateChannel'
+import pluginDeviceAPI from './plugin/device'
 
 export interface ServerUpdateInfo {
   available: boolean
@@ -41,7 +42,7 @@ export function getUpdateSystemType(): string {
 export function getUpdateChannel(): UpdateChannel {
   const version = app.getVersion()
   try {
-    // Beta 订阅属于设备级更新偏好，所有更新查询和心跳统一读取同一设置。
+    // Beta 订阅属于设备级更新偏好，自动和手动检查统一读取同一设置。
     const settings = databaseAPI.dbGet(HOST_STORAGE_KEYS.settingsGeneral)
     return resolveUpdateChannel(version, settings?.receiveBetaUpdates === true)
   } catch (error) {
@@ -58,7 +59,8 @@ export async function fetchLatestServerUpdate(): Promise<ServerUpdateInfo | null
   const query = new URLSearchParams({
     systemType: getUpdateSystemType(),
     currentVersion: app.getVersion(),
-    updateChannel: getUpdateChannel()
+    updateChannel: getUpdateChannel(),
+    deviceId: pluginDeviceAPI.getDeviceIdPublic()
   })
   const response = await httpRequest(
     `${OFFICIAL_SERVER_HTTP_URL}/api/updates/latest?${query.toString()}`
@@ -67,15 +69,16 @@ export async function fetchLatestServerUpdate(): Promise<ServerUpdateInfo | null
 }
 
 /**
- * 获取指定版本在当前系统上的 GitHub 和人工下载入口。
- * @param version 服务端心跳返回的目标版本号。
+ * 获取指定版本在当前系统上的官方、GitHub 和人工下载入口。
+ * @param version 检查更新接口返回的目标版本号。
  * @returns 当前系统可用的下载源列表。
  */
 export async function fetchServerUpdateSources(version: string): Promise<UpdateDownloadSource[]> {
   const query = new URLSearchParams({
     version,
     systemType: getUpdateSystemType(),
-    updateChannel: getUpdateChannel()
+    updateChannel: getUpdateChannel(),
+    deviceId: pluginDeviceAPI.getDeviceIdPublic()
   })
   const response = await httpRequest(
     `${OFFICIAL_SERVER_HTTP_URL}/api/updates/downloads?${query.toString()}`

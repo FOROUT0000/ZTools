@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 type IPCListener = (...args: unknown[]) => void
 
@@ -118,14 +118,80 @@ vi.mock('../../src/main/api/serverUpdateCatalog', () => ({
 }))
 
 import { UpdaterAPI } from '../../src/main/api/updater'
+import databaseAPI from '../../src/main/api/shared/database.js'
+import { fetchLatestServerUpdate } from '../../src/main/api/serverUpdateCatalog'
 
 describe('updater window controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.stubEnv('ZTOOLS_E2E', '1')
+    vi.mocked(databaseAPI.dbGet).mockReturnValue(null)
     mocks.ipcListeners.clear()
     mocks.navigationListeners.clear()
     mocks.latestWindow.current = null
     mocks.windowOpenHandler.current = null
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+  })
+
+  it('checks the update catalog on startup and every 30 minutes without heartbeat responses', async () => {
+    vi.stubEnv('ZTOOLS_E2E', '0')
+    const updater = new UpdaterAPI()
+    updater.init({ webContents: { send: vi.fn() } } as any)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchLatestServerUpdate).toHaveBeenCalledTimes(1)
+    expect(mocks.browserWindow).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(fetchLatestServerUpdate).toHaveBeenCalledTimes(2)
+    expect(mocks.browserWindow).toHaveBeenCalledTimes(1)
+
+    updater.setAutoCheck(false)
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(fetchLatestServerUpdate).toHaveBeenCalledTimes(2)
+
+    updater.setAutoCheck(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchLatestServerUpdate).toHaveBeenCalledTimes(3)
+    updater.cleanup()
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(fetchLatestServerUpdate).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps automatic checks off when disabled while allowing manual checks', async () => {
+    vi.stubEnv('ZTOOLS_E2E', '0')
+    vi.mocked(databaseAPI.dbGet).mockReturnValue({ autoCheckUpdate: false })
+    const updater = new UpdaterAPI()
+    updater.init({ webContents: { send: vi.fn() } } as any)
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(fetchLatestServerUpdate).not.toHaveBeenCalled()
+
+    expect(await updater.checkUpdate()).toMatchObject({ success: true, hasUpdate: true })
+    expect(fetchLatestServerUpdate).toHaveBeenCalledOnce()
+    updater.cleanup()
+  })
+
+  it('does not notify when automatic checks are disabled during an in-flight request', async () => {
+    vi.stubEnv('ZTOOLS_E2E', '0')
+    let resolveUpdate!: (value: any) => void
+    vi.mocked(fetchLatestServerUpdate).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveUpdate = resolve
+        })
+    )
+    const updater = new UpdaterAPI()
+    updater.init({ webContents: { send: vi.fn() } } as any)
+    updater.setAutoCheck(false)
+    resolveUpdate({ available: true, latestVersion: '3.2.0' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mocks.browserWindow).not.toHaveBeenCalled()
+    updater.cleanup()
   })
 
   it('creates a minimizable window and minimizes it through IPC', async () => {

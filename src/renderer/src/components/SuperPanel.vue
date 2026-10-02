@@ -1,5 +1,10 @@
 <template>
-  <div class="super-panel" @keydown="handleKeydown">
+  <div
+    class="super-panel"
+    :class="{ 'is-dragging': isDragging }"
+    @keydown="handleKeydown"
+    @click.capture="guardDragClick"
+  >
     <!-- 宫格模式：无剪贴板数据，显示固定指令 -->
     <template v-if="mode === 'pinned'">
       <!-- 头部：头像 + 超级面板标题 -->
@@ -59,69 +64,63 @@
         </div>
       </div>
 
-      <!-- 固定列表：使用 Draggable 组件 -->
-      <Draggable
+      <!-- 固定槽位只预览让位，松手后一次性提交数据。 -->
+      <div
         v-if="pinnedCommands.length > 0"
-        v-model="pinnedCommands"
+        :ref="(element) => (rootGrid = element as HTMLElement | null)"
         class="pinned-grid"
-        :item-key="(item: any) => getItemKey(item)"
-        :animation="200"
-        :move="onDragMove"
-        :swap-threshold="0.65"
-        :inverted-swap-threshold="0.65"
-        ghost-class="ghost"
-        chosen-class="chosen"
-        @start="onDragStart"
-        @end="onDragEnd"
       >
-        <template #item="{ element: cmd, index }">
-          <div
-            class="grid-item"
-            :data-item-key="getItemKey(cmd)"
-            :class="{
-              selected: index === selectedIndex
-            }"
-            style="cursor: move"
-            @click="isFolder(cmd) ? openFolderPopup(cmd, index) : launch(cmd)"
-            @mouseenter="!isDragging && (selectedIndex = index)"
-            @contextmenu.prevent="handleContextMenu(cmd)"
-          >
-            <!-- 文件夹图标：2x2 宫格 -->
-            <template v-if="isFolder(cmd)">
-              <div class="folder-icon">
-                <template v-for="i in 4" :key="i">
-                  <img
-                    v-if="cmd.items[i - 1]?.icon && !iconErrors.has(getItemKey(cmd.items[i - 1]))"
-                    :src="cmd.items[i - 1].icon"
-                    class="folder-thumb"
-                    draggable="false"
-                    @error="iconErrors.add(getItemKey(cmd.items[i - 1]))"
-                  />
-                  <div v-else-if="cmd.items[i - 1]" class="folder-thumb-placeholder">
-                    {{ cmd.items[i - 1].name.charAt(0).toUpperCase() }}
-                  </div>
-                  <div v-else class="folder-thumb-empty" />
-                </template>
-              </div>
-              <span class="grid-name">{{ cmd.name }}</span>
-            </template>
-            <!-- 普通指令图标 -->
-            <template v-else>
-              <img
-                v-if="cmd.icon && !iconErrors.has(getItemKey(cmd))"
-                :src="cmd.icon"
-                class="grid-icon"
-                draggable="false"
-                @error="iconErrors.add(getItemKey(cmd))"
-              />
-              <div v-else class="grid-icon-placeholder">
-                {{ cmd.name.charAt(0).toUpperCase() }}
-              </div>
-              <span class="grid-name">{{ cmd.name }}</span>
-            </template>
-          </div>
-        </template>
-      </Draggable>
+        <div
+          v-for="(cmd, index) in pinnedCommands"
+          :key="getItemKey(cmd)"
+          class="grid-item"
+          :data-item-key="getItemKey(cmd)"
+          :class="{
+            selected: !isDragging && index === selectedIndex,
+            'merge-target': mergeTargetKey === getItemKey(cmd)
+          }"
+          :style="dragItemStyle(cmd, index, 'root')"
+          @pointerdown="beginDrag($event, cmd, 'root')"
+          @dragstart.prevent
+          @click="isFolder(cmd) ? openFolderPopup(cmd, index) : launch(cmd)"
+          @mouseenter="!isDragging && (selectedIndex = index)"
+          @contextmenu.prevent="handleContextMenu(cmd)"
+        >
+          <!-- 文件夹图标：2x2 宫格 -->
+          <template v-if="isFolder(cmd)">
+            <div class="folder-icon">
+              <template v-for="i in 4" :key="i">
+                <img
+                  v-if="cmd.items[i - 1]?.icon && !iconErrors.has(getItemKey(cmd.items[i - 1]))"
+                  :src="cmd.items[i - 1].icon"
+                  class="folder-thumb"
+                  draggable="false"
+                  @error="iconErrors.add(getItemKey(cmd.items[i - 1]))"
+                />
+                <div v-else-if="cmd.items[i - 1]" class="folder-thumb-placeholder">
+                  {{ cmd.items[i - 1].name.charAt(0).toUpperCase() }}
+                </div>
+                <div v-else class="folder-thumb-empty" />
+              </template>
+            </div>
+            <span class="grid-name">{{ cmd.name }}</span>
+          </template>
+          <!-- 普通指令图标 -->
+          <template v-else>
+            <img
+              v-if="cmd.icon && !iconErrors.has(getItemKey(cmd))"
+              :src="cmd.icon"
+              class="grid-icon"
+              draggable="false"
+              @error="iconErrors.add(getItemKey(cmd))"
+            />
+            <div v-else class="grid-icon-placeholder">
+              {{ cmd.name.charAt(0).toUpperCase() }}
+            </div>
+            <span class="grid-name">{{ cmd.name }}</span>
+          </template>
+        </div>
+      </div>
       <!-- 空状态 -->
       <div v-if="pinnedCommands.length === 0" class="empty-state">
         <span class="empty-text">暂无固定项目</span>
@@ -238,7 +237,11 @@
 
     <!-- 文件夹弹窗 - 覆盖式 -->
     <Transition name="slide-up">
-      <div v-if="showFolderPopup && currentFolder" class="folder-popup-overlay">
+      <div
+        v-if="showFolderPopup && currentFolder"
+        class="folder-popup-overlay"
+        :class="{ 'dragged-out': draggedOut }"
+      >
         <div class="folder-popup-backdrop" @click="closeFolderPopup" />
         <div class="folder-popup-panel">
           <div class="folder-popup-header">
@@ -270,37 +273,35 @@
               </svg>
             </div>
           </div>
-          <draggable
+          <div
             v-if="currentFolder"
-            v-model="currentFolder.items"
+            :ref="(element) => (folderGrid = element as HTMLElement | null)"
             class="folder-popup-grid"
-            :item-key="(item: any) => getItemKey(item)"
-            :animation="200"
-            ghost-class="ghost"
-            chosen-class="chosen"
-            @end="savePinnedCommands"
           >
-            <template #item="{ element: cmd, index: idx }">
-              <div
-                class="grid-item"
-                style="cursor: move"
-                @click="launchFromFolder(cmd)"
-                @contextmenu.prevent="handleFolderItemContextMenu(cmd, idx)"
-              >
-                <img
-                  v-if="cmd.icon && !iconErrors.has(getItemKey(cmd))"
-                  :src="cmd.icon"
-                  class="grid-icon"
-                  draggable="false"
-                  @error="iconErrors.add(getItemKey(cmd))"
-                />
-                <div v-else class="grid-icon-placeholder">
-                  {{ cmd.name.charAt(0).toUpperCase() }}
-                </div>
-                <span class="grid-name">{{ cmd.name }}</span>
+            <div
+              v-for="(cmd, idx) in currentFolder.items"
+              :key="getItemKey(cmd)"
+              class="grid-item"
+              :data-item-key="getItemKey(cmd)"
+              :style="dragItemStyle(cmd, idx, 'folder')"
+              @pointerdown="beginDrag($event, cmd, 'folder')"
+              @dragstart.prevent
+              @click="launchFromFolder(cmd)"
+              @contextmenu.prevent="handleFolderItemContextMenu(cmd, idx)"
+            >
+              <img
+                v-if="cmd.icon && !iconErrors.has(getItemKey(cmd))"
+                :src="cmd.icon"
+                class="grid-icon"
+                draggable="false"
+                @error="iconErrors.add(getItemKey(cmd))"
+              />
+              <div v-else class="grid-icon-placeholder">
+                {{ cmd.name.charAt(0).toUpperCase() }}
               </div>
-            </template>
-          </draggable>
+              <span class="grid-name">{{ cmd.name }}</span>
+            </div>
+          </div>
         </div>
       </div>
     </Transition>
@@ -413,7 +414,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import Draggable from 'vuedraggable'
+import { useSuperPanelDrag } from '../composables/useSuperPanelDrag'
 import defaultAvatar from '../assets/image/default.png'
 
 interface CommandItem {
@@ -531,11 +532,23 @@ const isRenamingFolder = ref(false)
 const folderNameInput = ref('')
 const folderNameInputRef = ref<HTMLInputElement | null>(null)
 
-// 拖拽排序相关状态
-const isDragging = ref(false)
-const dragItemKey = ref('') // 被拖拽项的 key（身份标识）
-const dragSnapshot = ref<GridItem[]>([])
-const dragItemIsFolder = ref(false) // 被拖拽项是否是文件夹
+const {
+  rootGrid,
+  folderGrid,
+  dragging: isDragging,
+  draggedOut,
+  targetKey: mergeTargetKey,
+  begin: beginDrag,
+  cancel: cancelDrag,
+  guardClick: guardDragClick,
+  itemStyle: dragItemStyle
+} = useSuperPanelDrag<GridItem>({
+  items: pinnedCommands,
+  folderItems: () => currentFolder.value?.items ?? [],
+  key: getItemKey,
+  canMerge: (item) => !isFolder(item),
+  commit: commitDrag
+})
 
 // 同步翻译
 function syncTranslationForClipboardContent(content: ClipboardContent | null): void {
@@ -651,14 +664,69 @@ async function savePinnedCommands(): Promise<void> {
   }
 }
 
-// 拖动排序结束后保存顺序
-async function onDragEnd(): Promise<void> {
-  isDragging.value = false
-  dragItemKey.value = ''
-  dragItemIsFolder.value = false
-  dragSnapshot.value = []
+/**
+ * 将拖拽预览一次性提交为文件夹排序、顶层排序或合并。
+ * @param source 被拖拽项目
+ * @param fromFolder 是否从文件夹开始
+ * @param outside 是否已跨越文件夹边界
+ * @param gap 去掉源项后的插入槽位
+ * @param targetKey 已完成停留的合并目标身份
+ * @returns 无返回值
+ */
+function commitDrag(
+  source: GridItem,
+  fromFolder: boolean,
+  outside: boolean,
+  gap: number,
+  targetKey: string | null
+): void {
+  const key = getItemKey(source)
+  // 文件夹内只排序，禁止创建嵌套文件夹。
+  if (fromFolder && !outside) {
+    if (!currentFolder.value || isFolder(source)) return
+    const flow = currentFolder.value.items.filter((item) => getItemKey(item) !== key)
+    flow.splice(Math.min(gap, flow.length), 0, source)
+    currentFolder.value.items = flow
+    void savePinnedCommands()
+    return
+  }
 
-  savePinnedCommands()
+  const flow = pinnedCommands.value.filter((item) => getItemKey(item) !== key)
+  if (fromFolder) {
+    if (!currentFolder.value || isFolder(source)) return
+    // 松手前源项一直保留在文件夹；此处才迁移并解散仅剩一项的文件夹。
+    const folder = currentFolder.value
+    folder.items = folder.items.filter((item) => getItemKey(item) !== key)
+    const index = flow.findIndex((item) => getItemKey(item) === getItemKey(folder))
+    if (folder.items.length <= 1 && index >= 0) {
+      flow.splice(index, 1, ...folder.items)
+      // 原文件夹退化为普通项目后，继续以同一位置接收合并。
+      if (targetKey === getItemKey(folder))
+        targetKey = folder.items[0] ? getItemKey(folder.items[0]) : null
+      if (folder.items.length === 0 && index < gap) gap--
+    }
+    closeFolderPopup()
+  }
+
+  const targetIndex = flow.findIndex((item) => getItemKey(item) === targetKey)
+  if (targetIndex >= 0 && !isFolder(source)) {
+    const target = flow[targetIndex]
+    if (isFolder(target)) {
+      if (!target.items.some((item) => getItemKey(item) === key)) target.items.push(source)
+    } else {
+      flow[targetIndex] = {
+        isFolder: true,
+        id: generateFolderId(),
+        name: '文件夹',
+        items: [target, source]
+      }
+    }
+  } else {
+    flow.splice(Math.max(0, Math.min(gap, flow.length)), 0, source)
+  }
+  pinnedCommands.value = flow
+  selectedIndex.value = Math.max(0, Math.min(gap, flow.length - 1))
+  void savePinnedCommands()
 }
 
 // 添加到已有文件夹
@@ -833,22 +901,6 @@ async function handleFolderItemContextMenu(
     }
   ]
   await window.ztools.showContextMenu(menuItems)
-}
-
-function onDragStart(evt: any): void {
-  isDragging.value = true
-  const idx = evt.oldIndex ?? -1
-  const item = pinnedCommands.value[idx]
-  dragItemKey.value = item ? getItemKey(item) : ''
-  dragItemIsFolder.value = item ? isFolder(item) : false
-  dragSnapshot.value = JSON.parse(JSON.stringify(pinnedCommands.value))
-}
-
-/**
- * vuedraggable 的 move 回调。
- */
-function onDragMove(): boolean | void {
-  if (!isDragging.value || dragItemIsFolder.value) return
 }
 
 // 返回固定列表
@@ -1337,6 +1389,9 @@ let cleanupContextMenuListener: (() => void) | null = null
 onMounted(() => {
   // 监听超级面板数据（从主进程发送）
   window.ztools.onSuperPanelData((data) => {
+    // 新数据可能替换整个视图，先取消手势，避免旧身份写回新列表。
+    cancelDrag()
+    closeFolderPopup()
     console.log(
       '[SuperPanel] 收到数据, type:',
       data.type,
@@ -1752,23 +1807,37 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-/* 拖动时的样式 */
-.ghost {
-  opacity: 0.5;
-  background: var(--border-color);
+/* 槽位动画只移动容器，合并提示单独缩放图标。 */
+.grid-item {
+  touch-action: none;
 }
 
-.chosen {
-  opacity: 0.8;
+.is-dragging .grid-item {
+  cursor: grabbing;
 }
 
-/* 防止拖动时图标和文字阻碍拖动 */
-:deep(.ghost .grid-icon),
-:deep(.ghost .grid-icon-placeholder),
-:deep(.ghost .grid-name),
-:deep(.chosen .grid-icon),
-:deep(.chosen .grid-icon-placeholder),
-:deep(.chosen .grid-name) {
+.is-dragging .grid-item:hover {
+  background: transparent;
+}
+
+.grid-item.merge-target {
+  background: var(--active-bg);
+  box-shadow: inset 0 0 0 2px var(--primary-color);
+}
+
+.merge-target > :first-child {
+  transform: scale(1.14);
+  transition: transform 120ms ease-out;
+}
+
+.drag-preview {
+  cursor: grabbing;
+  background: transparent;
+  filter: drop-shadow(0 6px 12px rgb(0 0 0 / 35%));
+}
+
+.folder-popup-overlay.dragged-out {
+  opacity: 0;
   pointer-events: none;
 }
 
