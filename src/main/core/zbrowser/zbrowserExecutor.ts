@@ -1220,12 +1220,20 @@ export class ZBrowserExecutor {
    * - runner → main: { method, methodEndKey, args } 请求执行操作
    * - main → runner: { action, payload } 返回执行结果
    * - runner → main: { method: 'runEnd', args: [result] } 队列执行完毕
+   * @param queue 待执行的浏览器操作队列。
+   * @returns runner 执行完成后的结果；启动失败、异常退出或超时时拒绝。
    */
   private forkAndExecute(queue: ZBrowserQueueItem[]): Promise<ZBrowserRunResult> {
     return new Promise((resolve, reject) => {
-      // 使用 app.isPackaged 选择 runner 路径（避免 asar 内 fork 失败）
+      // asarUnpack 保留 resources 目录层级，fork 必须指向解包后的实体文件。
       const actualRunnerPath = app.isPackaged
-        ? path.join(process.resourcesPath, 'zbrowser', 'runner.js')
+        ? path.join(
+            process.resourcesPath,
+            'app.asar.unpacked',
+            'resources',
+            'zbrowser',
+            'runner.js'
+          )
         : getAppBundlePath('resources', 'zbrowser', 'runner.js')
 
       this._childProcess = fork(actualRunnerPath, [], {
